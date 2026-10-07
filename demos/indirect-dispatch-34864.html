@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>three.js — CPU-written indirect dispatch</title>
+	<style>
+		body { max-width: 850px; margin: 32px auto; padding: 0 20px; font: 16px/1.5 system-ui, sans-serif; color: #18202b; }
+		h1 { font-size: 1.6rem; }
+		nav { display: flex; gap: 20px; margin: 24px 0; }
+		a { color: #0758ad; }
+		a[aria-current] { font-weight: bold; }
+		pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: #f2f4f6; }
+		table { width: 100%; border-collapse: collapse; }
+		th, td { padding: 12px 8px; text-align: left; border-bottom: 1px solid #ccd2da; }
+		code { overflow-wrap: anywhere; }
+		[data-status="passed"] { color: #176536; }
+		[data-status="error"], [data-status="mismatch"] { color: #a51f25; }
+	</style>
+</head>
+<body>
+	<h1>CPU-written indirect dispatch</h1>
+	<p>Reproduction for <a href="https://github.com/mrdoob/three.js/pull/34864">three.js #34864</a>.
+		The same program runs against either the unchanged upstream commit or the PR commit.</p>
+	<nav aria-label="Source version">
+		<a id="baseline" href="?version=baseline">Run upstream baseline</a>
+		<a id="fixed" href="?version=fixed">Run PR fix</a>
+	</nav>
+	<p id="version"></p>
+	<p>A CPU-created buffer requests two workgroups of two invocations. Each invocation increments
+		one output element. Then the CPU changes the count to three workgroups and sets <code>needsUpdate = true</code>.</p>
+	<p>The dispatch buffer is used only as the <code>renderer.compute()</code> dispatch argument.
+		It is not bound as a shader input.</p>
+	<p>Requires a browser with WebGPU enabled. Each version loads its own source files exported from the pinned commit.</p>
+	<p id="status" role="status">Loading source modules…</p>
+	<p id="adapter"></p>
+	<table>
+		<thead><tr><th>Step</th><th>Expected output</th><th>Actual GPU readback</th></tr></thead>
+		<tbody>
+			<tr><td>Initial dispatch</td><td><code>[1,1,1,1,0,0,0,0]</code></td><td id="first">Not run</td></tr>
+			<tr><td>After CPU update</td><td><code>[2,2,2,2,1,1,0,0]</code></td><td id="second">Not run</td></tr>
+		</tbody>
+	</table>
+	<pre id="error" hidden></pre>
+	<details><summary>Reproduction code</summary><pre id="code"></pre></details>
+	<script type="module">
+		const versions = {
+			baseline: { owner: 'mrdoob', sha: '7c419ddae99fe0f666b509072fcf47e2017542e7', label: 'Upstream baseline' },
+			fixed: { owner: 'gjija', sha: '910d28874b5ee1cdfa99f21e39c9124a327c629c', label: 'PR fix' }
+		};
+		const version = new URLSearchParams( location.search ).get( 'version' ) || 'baseline';
+		const selected = versions[ version ];
+		const status = document.getElementById( 'status' );
+		const errorOutput = document.getElementById( 'error' );
+		const expected = [[ 1, 1, 1, 1, 0, 0, 0, 0 ], [ 2, 2, 2, 2, 1, 1, 0, 0 ]];
+		const cells = [ document.getElementById( 'first' ), document.getElementById( 'second' ) ];
+		const result = { version, sha: selected?.sha, status: 'loading', phase: 'setup', outputs: [], gpuErrors: [] };
+		let renderer, device;
+		let validationScopeOpen = false;
+
+		async function reproduce( THREE, renderer, report ) {
+
+			const { Fn, instanceIndex, instancedArray } = THREE.TSL;
+			const dispatch = new THREE.IndirectStorageBufferAttribute( new Uint32Array( [ 2, 1, 1 ] ), 1 );
+			const output = instancedArray( 8, 'uint' );
+			const kernel = Fn( () => {
+
+				output.element( instanceIndex ).addAssign( 1 );
+
+			} )().computeKernel( [ 2 ] );
+
+			try {
+
+				renderer.compute( kernel, dispatch );
+				report( 0, Array.from( new Uint32Array( await renderer.getArrayBufferAsync( output.value ) ) ) );
+
+				dispatch.array[ 0 ] = 3;
+				dispatch.needsUpdate = true;
+				renderer.compute( kernel, dispatch );
+				report( 1, Array.from( new Uint32Array( await renderer.getArrayBufferAsync( output.value ) ) ) );
+
+			} finally {
+
+				kernel.dispose();
+				dispatch.dispose();
+				output.value.dispose();
+
+			}
+
+		}
+
+		document.getElementById( 'code' ).textContent = reproduce.toString();
+
+		try {
+
+			if ( ! selected ) throw new Error( 'Unknown version. Choose baseline or fixed.' );
+			document.getElementById( version ).setAttribute( 'aria-current', 'page' );
+			const link = document.createElement( 'a' );
+			link.href = `https://github.com/${ selected.owner }/three.js/commit/${ selected.sha }`;
+			link.textContent = `${ selected.label }: ${ selected.sha }`;
+			document.getElementById( 'version' ).append( link );
+			if ( ! navigator.gpu ) throw new Error( 'WebGPU is unavailable. Open this HTTPS page in a WebGPU-capable browser.' );
+
+			result.phase = 'loading source modules';
+			const THREE = await import( `./indirect-dispatch-34864/${ version }/src/Three.WebGPU.js` );
+			result.phase = 'initializing WebGPU';
+			status.textContent = 'Initializing WebGPU…';
+			renderer = new THREE.WebGPURenderer();
+			renderer.onError = error => result.gpuErrors.push( error.message );
+			await renderer.init();
+			if ( renderer.backend.isWebGPUBackend !== true ) throw new Error( 'WebGPU is unavailable; the WebGL fallback cannot run this reproduction.' );
+
+			device = renderer.backend.device;
+			const info = device.adapterInfo;
+			result.adapter = { vendor: info.vendor, architecture: info.architecture, description: info.description, isFallbackAdapter: info.isFallbackAdapter };
+			result.isWebGPUBackend = true;
+			document.getElementById( 'adapter' ).textContent = `WebGPU adapter: ${ info.vendor } ${ info.architecture } ${ info.description }`;
+			device.pushErrorScope( 'validation' );
+			validationScopeOpen = true;
+			result.phase = 'initial dispatch';
+			status.textContent = 'Running both dispatches and reading GPU output…';
+			await reproduce( THREE, renderer, ( step, actual ) => {
+
+				result.outputs.push( actual );
+				cells[ step ].textContent = JSON.stringify( actual );
+				cells[ step ].dataset.status = JSON.stringify( actual ) === JSON.stringify( expected[ step ] ) ? 'passed' : 'mismatch';
+				result.phase = step === 0 ? 'updated dispatch' : 'complete';
+
+			} );
+			result.status = JSON.stringify( result.outputs ) === JSON.stringify( expected ) ? 'passed' : 'mismatch';
+			status.textContent = result.status === 'passed' ? 'Both GPU readbacks match the expected output.' : 'GPU output does not match the expected values.';
+
+		} catch ( error ) {
+
+			result.status = result.phase.includes( 'dispatch' ) ? 'error' : 'unavailable';
+			result.exception = { name: error.name, message: error.message };
+			status.textContent = `Stopped during ${ result.phase }.`;
+			errorOutput.hidden = false;
+			errorOutput.textContent = `${ error.name }: ${ error.message }`;
+
+		} finally {
+
+			if ( validationScopeOpen ) {
+
+				try {
+
+					await device.queue.onSubmittedWorkDone();
+					const validationError = await device.popErrorScope();
+					if ( validationError ) result.gpuErrors.push( validationError.message );
+
+				} catch ( error ) {
+
+					result.gpuErrors.push( error.message );
+
+				}
+
+			}
+
+			try {
+
+				await renderer?.dispose();
+
+			} catch ( error ) {
+
+				result.gpuErrors.push( `Cleanup: ${ error.message }` );
+
+			}
+
+			if ( result.gpuErrors.length ) {
+
+				result.status = 'error';
+				status.textContent = 'WebGPU reported an error.';
+				errorOutput.hidden = false;
+				errorOutput.textContent += '\n' + result.gpuErrors.join( '\n' );
+
+			}
+
+			status.dataset.status = result.status;
+			window.demoResult = result;
+
+		}
+	</script>
+</body>
+</html>
