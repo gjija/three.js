@@ -1,0 +1,61 @@
+name: Indirect dispatch demo
+
+on:
+  push:
+    branches:
+      - demo/indirect-dispatch-34864
+    paths:
+      - .github/workflows/indirect-dispatch-demo-pages.yml
+      - demos/indirect-dispatch-34864.html
+      - demos/prepare_indirect_dispatch_demo.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: indirect-dispatch-demo-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'gjija/three.js'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out demo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Fetch pinned public source commits
+        run: git fetch --no-tags --depth=1 https://github.com/gjija/three.js.git 7c419ddae99fe0f666b509072fcf47e2017542e7 910d28874b5ee1cdfa99f21e39c9124a327c629c
+      - name: Prepare static site
+        run: python3 demos/prepare_indirect_dispatch_demo.py _site
+      - name: Verify reviewed HTML
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('_site/manifest.json').read_text())
+          assert manifest['htmlSHA256'] == '7a20a759f8977504a4c6c0e83d28ec348524abba1170117d526795178139679d'
+          assert manifest['versions']['baseline']['backendSHA256'] == 'b50a9133328069331928bd3b56439937d60008cb540b5f0f6d97c9dbde07ba6f'
+          assert manifest['versions']['fixed']['backendSHA256'] == '00987eff1448512170edd0124650a2ce4502dcdce5bd8d9a3a28116003de2a89'
+          PY
+      - name: Upload static site
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish demo
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
