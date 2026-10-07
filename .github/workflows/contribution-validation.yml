@@ -1,0 +1,61 @@
+name: Contribution Linux validation
+
+on:
+  push:
+    branches: [ validation/three-r187-linux ]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate ${{ matrix.name }}
+    if: github.repository == 'gjija/three.js' && github.event.created
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: baseline
+            ref: 5088b1c274e1e1d1532f6eb811a6ecf5c8f74d78
+          - name: collada
+            ref: 329edaa8abe4062ecec127b7ec0c0cde11565cf7
+          - name: box3
+            ref: f6c45052b87114a289b241ec273453002a204d6c
+    steps:
+      - name: Checkout exact validation commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      - name: Verify checkout
+        env:
+          EXPECTED_SHA: ${{ matrix.ref }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install Vulkan drivers and xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers xvfb
+      - name: Install dependencies
+        run: npm ci
+      - name: Unit and lint tests
+        run: npm test
+      - name: Example coverage
+        run: npm run test-e2e-cov
+      - name: Build
+        run: npm run build
+      - name: Selected official screenshot tests
+        run: xvfb-run -a env -u CI VISIBLE=1 npm run test-e2e -- webgl_loader_collada webgl_loader_collada_skinning webgl_loader_collada_kinematics webgl_mesh_batch webgpu_mesh_batch webgpu_materials_arrays
+      - name: Upload failed screenshot evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: validation-screenshots-${{ matrix.name }}
+          path: test/e2e/output-screenshots
+          if-no-files-found: ignore
