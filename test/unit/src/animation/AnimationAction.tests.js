@@ -502,6 +502,30 @@ export default QUnit.module( 'Animation', () => {
 
 		} );
 
+		QUnit.test( 'LoopPingPong with clampWhenFinished', ( assert ) => {
+
+			const { root, mixer, animationAction } = createAnimation();
+			animationAction.setLoop( LoopPingPong, 2 );
+			animationAction.clampWhenFinished = true;
+			animationAction.play();
+
+			// finish both loops with a single large update
+			mixer.update( 500 );
+			mixer.update( 1600 );
+			assert.equal( root.rotation.x, 0, 'When two ping-pong loops end, it stays at the start of the clip.' );
+			mixer.update( 500 );
+			assert.equal( root.rotation.x, 0, 'When two ping-pong loops have ended, it stays at the start of the clip.' );
+
+			animationAction.reset().setLoop( LoopPingPong, 1 );
+			mixer.update( 750 );
+			assert.equal( root.rotation.x, 270, 'When an animation is 3/4 in the first loop, it has changed to 3/4.' );
+			mixer.update( 500 );
+			assert.equal( root.rotation.x, 360, 'When a single ping-pong loop ends, it stays at the end of the clip.' );
+			mixer.update( 500 );
+			assert.equal( root.rotation.x, 360, 'When a single ping-pong loop has ended, it stays at the end of the clip.' );
+
+		} );
+
 	} );
 
 } );
